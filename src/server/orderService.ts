@@ -71,4 +71,77 @@ export class OrderService {
       return order;
     });
   }
+
+  static async listOrders(page: number = 1, limit: number = 20, status?: string) {
+    const skip = (page - 1) * limit;
+    const where = status ? { status } : {};
+    const [orders, total] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        include: {
+          items: {
+            include: {
+              variant: { include: { product: true } }
+            }
+          }
+        },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.order.count({ where })
+    ]);
+
+    return {
+      data: orders.map(OrderService.mapOrder),
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+    };
+  }
+
+  static async getOrderById(id: string) {
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        items: {
+          include: {
+            variant: { include: { product: true } }
+          }
+        }
+      }
+    });
+    return order ? OrderService.mapOrder(order) : null;
+  }
+
+  static async updateOrderStatus(id: string, status: string) {
+    const valid = ["PENDING", "COMPLETED", "CANCELLED", "REFUNDED", "SHIPPED"];
+    if (!valid.includes(status)) {
+      throw new Error(`Invalid status. Must be one of: ${valid.join(", ")}`);
+    }
+    const updated = await prisma.order.update({
+      where: { id },
+      data: { status },
+      include: { items: true }
+    });
+    return OrderService.mapOrder(updated);
+  }
+
+  private static mapOrder(o: any) {
+    return {
+      id: o.id,
+      userId: o.userId,
+      totalAmount: parseFloat(o.totalAmount?.toString() || "0"),
+      status: o.status,
+      paymentIntent: o.paymentIntent,
+      createdAt: o.createdAt,
+      updatedAt: o.updatedAt,
+      items: (o.items || []).map((it: any) => ({
+        id: it.id,
+        variantId: it.variantId,
+        quantity: it.quantity,
+        price: parseFloat(it.price?.toString() || "0"),
+        productName: it.variant?.product?.name || null,
+        sku: it.variant?.sku || null
+      }))
+    };
+  }
 }

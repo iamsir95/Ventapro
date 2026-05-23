@@ -161,7 +161,100 @@ export class ProductService {
       }
     });
 
-    // Invalidate search caches
+    await ProductService.invalidateCaches();
+    return newProduct;
+  }
+
+  /**
+   * List all products with pagination (admin)
+   */
+  static async listProducts(page: number = 1, limit: number = 20) {
+    const skip = (page - 1) * limit;
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        include: { category: true, variants: true },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.product.count()
+    ]);
+
+    return {
+      data: products.map(ProductService.mapProduct),
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+    };
+  }
+
+  static async getProductById(id: string) {
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: { category: true, variants: true }
+    });
+    if (!product) return null;
+    return ProductService.mapProduct(product);
+  }
+
+  static async updateProduct(id: string, data: any) {
+    const updated = await prisma.product.update({
+      where: { id },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.slug !== undefined && { slug: data.slug }),
+        ...(data.brand !== undefined && { brand: data.brand }),
+        ...(data.description !== undefined && { description: data.description }),
+        ...(data.basePrice !== undefined && { basePrice: data.basePrice }),
+        ...(data.categoryId !== undefined && { categoryId: data.categoryId }),
+        ...(data.isNew !== undefined && { isNew: data.isNew }),
+        ...(data.isHot !== undefined && { isHot: data.isHot }),
+        ...(data.discountPct !== undefined && { discountPct: data.discountPct }),
+        ...(data.specs !== undefined && { specs: JSON.stringify(data.specs) }),
+      },
+      include: { category: true, variants: true }
+    });
+
+    await ProductService.invalidateCaches();
+    return ProductService.mapProduct(updated);
+  }
+
+  static async deleteProduct(id: string) {
+    // Cascade-delete variants first since the relation lacks onDelete: Cascade
+    await prisma.productVariant.deleteMany({ where: { productId: id } });
+    await prisma.product.delete({ where: { id } });
+    await ProductService.invalidateCaches();
+    return { success: true };
+  }
+
+  private static mapProduct(p: any) {
+    return {
+      id: p.id,
+      name: p.name,
+      slug: p.slug,
+      description: p.description,
+      brand: p.brand,
+      basePrice: parseFloat(p.basePrice?.toString() || "0"),
+      price: parseFloat(p.basePrice?.toString() || "0"),
+      categoryId: p.categoryId,
+      category: p.category?.name || 'General',
+      isNew: p.isNew,
+      isHot: p.isHot,
+      discountPct: p.discountPct,
+      image: "https://picsum.photos/seed/" + p.id + "/600/600",
+      specs: p.specs ? JSON.parse(p.specs) : {},
+      variants: (p.variants || []).map((v: any) => ({
+        id: v.id,
+        sku: v.sku,
+        name: v.name,
+        priceObj: v.priceObj ? parseFloat(v.priceObj.toString()) : null,
+        stock: v.stock,
+        attributes: v.attributes ? JSON.parse(v.attributes) : {}
+      })),
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt
+    };
+  }
+
+  private static async invalidateCaches() {
     memoryCache.clear();
     try {
       if (redis.status === "ready") {
@@ -169,7 +262,5 @@ export class ProductService {
         if (keys.length > 0) await redis.del(...keys);
       }
     } catch {}
-
-    return newProduct;
   }
 }

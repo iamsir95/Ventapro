@@ -118,7 +118,7 @@ export default function ProductDetailsPage() {
               <button 
                 onClick={(e) => {
                   e.preventDefault();
-                  addItem({ id, name, price: currentPrice, image, category: product.category });
+                  addItem({ id: id!, name, price: currentPrice, image, category: product.category, quantity: 1 });
                 }}
                 className="w-full flex items-center justify-center gap-3 bg-black text-white hover:bg-primary-neon hover:text-black py-5 rounded-2xl font-black uppercase tracking-widest transition-all shadow-xl hover:shadow-primary-neon/20 hover:-translate-y-1"
               >

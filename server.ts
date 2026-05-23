@@ -3,7 +3,9 @@ import { createServer as createViteServer } from "vite";
 import { ProductService } from "./src/server/productService";
 import { OrderService } from "./src/server/orderService";
 import { PaymentService } from "./src/server/paymentService";
-import { ExpressAuth } from "@auth/express";
+import { UserService } from "./src/server/userService";
+import { AnalyticsService } from "./src/server/analyticsService";
+import { ExpressAuth, getSession } from "@auth/express";
 import GitHub from "@auth/core/providers/github";
 import Google from "@auth/core/providers/google";
 import Credentials from "@auth/core/providers/credentials";
@@ -11,6 +13,8 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcrypt";
 import path from "path";
+
+const ADMIN_EMAIL = "admin@pro-gaming.com";
 
 // Initialize Prisma
 const prisma = new PrismaClient();
@@ -126,13 +130,28 @@ async function startServer() {
     secret: process.env.AUTH_SECRET || "fallback_secret_for_dev_environment_only",
   };
 
+  // Admin auth middleware: validates the Auth.js session and admin email
+  const requireAdmin = async (req: any, res: any, next: any) => {
+    try {
+      const session = await getSession(req, authConfig);
+      if (!session?.user || session.user.email !== ADMIN_EMAIL) {
+        return res.status(403).json({ error: "Forbidden: admin only" });
+      }
+      req.session = session;
+      next();
+    } catch (err: any) {
+      console.error("requireAdmin error:", err);
+      res.status(500).json({ error: "Auth check failed" });
+    }
+  };
+
   // --- Product API Routes ---
   app.get("/api/products/search", async (req, res) => {
     try {
       const q = req.query.q as string || "";
       const page = parseInt(req.query.page as string || "1");
       const limit = parseInt(req.query.limit as string || "10");
-      
+
       const results = await ProductService.searchProducts(q, page, limit);
       res.json(results);
     } catch (error: any) {
@@ -140,13 +159,117 @@ async function startServer() {
     }
   });
 
-  app.post("/api/products", async (req, res) => {
+  app.get("/api/products", async (req, res) => {
     try {
-      // Basic auth check can be added here
+      const page = parseInt((req.query.page as string) || "1");
+      const limit = parseInt((req.query.limit as string) || "20");
+      const results = await ProductService.listProducts(page, limit);
+      res.json(results);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/products/:id", async (req, res) => {
+    try {
+      const product = await ProductService.getProductById(req.params.id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      res.json(product);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/products", requireAdmin, async (req, res) => {
+    try {
       const newProduct = await ProductService.createProduct(req.body);
       res.json(newProduct);
     } catch (error: any) {
       console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.put("/api/products/:id", requireAdmin, async (req, res) => {
+    try {
+      const updated = await ProductService.updateProduct(req.params.id, req.body);
+      res.json(updated);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/products/:id", requireAdmin, async (req, res) => {
+    try {
+      await ProductService.deleteProduct(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- Admin: Orders ---
+  app.get("/api/admin/orders", requireAdmin, async (req, res) => {
+    try {
+      const page = parseInt((req.query.page as string) || "1");
+      const limit = parseInt((req.query.limit as string) || "20");
+      const status = req.query.status as string | undefined;
+      const results = await OrderService.listOrders(page, limit, status);
+      res.json(results);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/admin/orders/:id", requireAdmin, async (req, res) => {
+    try {
+      const order = await OrderService.getOrderById(req.params.id);
+      if (!order) return res.status(404).json({ error: "Order not found" });
+      res.json(order);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.patch("/api/admin/orders/:id/status", requireAdmin, async (req, res) => {
+    try {
+      const { status } = req.body;
+      const updated = await OrderService.updateOrderStatus(req.params.id, status);
+      res.json(updated);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // --- Admin: Users ---
+  app.get("/api/admin/users", requireAdmin, async (req, res) => {
+    try {
+      const page = parseInt((req.query.page as string) || "1");
+      const limit = parseInt((req.query.limit as string) || "20");
+      const search = req.query.search as string | undefined;
+      const results = await UserService.listUsers(page, limit, search);
+      res.json(results);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/admin/users/:id", requireAdmin, async (req, res) => {
+    try {
+      const user = await UserService.getUserById(req.params.id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      res.json(user);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- Admin: Analytics ---
+  app.get("/api/admin/analytics", requireAdmin, async (_req, res) => {
+    try {
+      const data = await AnalyticsService.getDashboard();
+      res.json(data);
+    } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
   });
@@ -188,20 +311,20 @@ async function startServer() {
     }
   });
 
-  app.get("/api/orders/vnpay_return", (req, res) => {
+  app.get("/api/orders/vnpay_return", async (req, res) => {
       const result = PaymentService.verifyVNPayIPN(req.query);
-      if (result.success) {
-          // TODO: Update Order status to PAID
+      if (result.success && result.orderId) {
+          try { await OrderService.updateOrderStatus(result.orderId, "COMPLETED"); } catch {}
           res.redirect("/orders/success?orderId=" + result.orderId);
       } else {
           res.redirect("/orders/failed");
       }
   });
 
-  app.post("/api/orders/momo_ipn", (req, res) => {
+  app.post("/api/orders/momo_ipn", async (req, res) => {
       const result = PaymentService.verifyMoMoIPN(req.body);
-      if (result.success) {
-          // TODO: Update Order status to PAID
+      if (result.success && result.orderId) {
+          try { await OrderService.updateOrderStatus(result.orderId, "COMPLETED"); } catch {}
           res.status(200).json({ message: "Received IPN success."});
       } else {
           res.status(400).json({ message: "Invalid IPN setup."});
