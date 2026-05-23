@@ -1,205 +1,267 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useCartStore } from '../store/cartStore';
-import { CheckCircle2, ChevronRight, Check } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Check, X, CreditCard, Wallet, Truck, ArrowLeft } from 'lucide-react';
 import { formatVND } from '../lib/format';
+import { getSession } from '../lib/authClient';
 
-export function CheckoutModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
+type PayMethod = 'CARD' | 'VNPAY' | 'MOMO' | 'COD';
+
+export function CheckoutModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [isLoading, setIsLoading] = useState(false);
-  
+  const [payMethod, setPayMethod] = useState<PayMethod>('CARD');
+  const [session, setSession] = useState<any>(null);
+  const [orderId, setOrderId] = useState<string>('');
+  const [shipping, setShipping] = useState({ firstName: '', lastName: '', email: '', address: '', city: '', zip: '' });
+
   const { items, clearCart } = useCartStore();
   const subtotal = items.reduce((acc, item) => acc + item.price * item.quantity, 0);
-  const tax = subtotal * 0.08; // Giả sử thuế VAT 8% hoặc tính sẵn vào giá
-  const shipping = subtotal > 150 ? 0 : 5; // Shipping $5 (tương đương 125,000đ)
-  const total = subtotal + tax + shipping;
+  const tax = subtotal * 0.08;
+  const shipFee = subtotal > 150 ? 0 : 5;
+  const total = subtotal + tax + shipFee;
+
+  useEffect(() => {
+    if (isOpen) {
+      getSession().then(setSession);
+      setStep(1);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const handleNext = () => setStep((s) => Math.min(s + 1, 4) as 1 | 2 | 3 | 4);
+  const validateStep = (s: number) => {
+    if (s === 1) {
+      return shipping.firstName && shipping.lastName && shipping.email && shipping.address && shipping.city;
+    }
+    return true;
+  };
+
+  const handleNext = () => {
+    if (!validateStep(step)) {
+      alert('Vui lòng điền đầy đủ thông tin giao hàng.');
+      return;
+    }
+    setStep((s) => Math.min(s + 1, 4) as 1 | 2 | 3 | 4);
+  };
   const handleBack = () => setStep((s) => Math.max(s - 1, 1) as 1 | 2 | 3 | 4);
 
   const handlePlaceOrder = async () => {
     setIsLoading(true);
-
     try {
-      // Chuẩn bị dữ liệu định dạng { variantId, quantity }
-      const orderItems = items.map(item => ({
-        variantId: item.id, // Trong thực tế variantId sẽ nằm sâu hơn, ta giả lập item.id là variantId
-        quantity: item.quantity
-      }));
-
-      // Gọi API POST tới Backend Order Service (Với userId giả lập do đây là bản preview không auth bắt buộc)
+      const orderItems = items.map((item) => ({ variantId: item.id, quantity: item.quantity }));
       const res = await fetch('/api/orders/checkout', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: 'mock-user-123', // Demo fallback
-          items: orderItems
-        })
+          userId: session?.user?.id || session?.user?.email || 'guest-' + Date.now(),
+          items: orderItems,
+          paymentMethod: payMethod === 'CARD' || payMethod === 'COD' ? null : payMethod,
+        }),
       });
-
       const result = await res.json();
-
       if (res.ok && result.success) {
-        setIsLoading(false);
+        setOrderId(result.order?.id || '');
+        if (result.paymentUrl) {
+          window.location.href = result.paymentUrl;
+          return;
+        }
         setStep(4);
         clearCart();
       } else {
         alert(`Lỗi đặt hàng: ${result.error || 'Server error'}`);
-        setIsLoading(false);
       }
-    } catch (error) {
+    } catch (e) {
       alert('Không thể kết nối đến máy chủ thanh toán.');
+    } finally {
       setIsLoading(false);
     }
   };
 
-  const StepIndicator = () => (
-    <div className="mb-8 flex items-center justify-between relative px-2">
-      <div className="absolute top-1/2 left-0 h-[3px] w-full -translate-y-1/2 bg-black/5 z-0 rounded-full"></div>
-      <div 
-        className="absolute top-1/2 left-0 h-[3px] -translate-y-1/2 bg-black z-0 transition-all duration-300 rounded-full" 
-        style={{ width: `${((Math.min(step, 3) - 1) / 2) * 100}%` }}
-      ></div>
-
-      {[1, 2, 3].map(s => (
-        <div key={s} className={`relative z-10 flex h-10 w-10 items-center justify-center rounded-full border-[3px] transition-all bg-white ${
-          step >= s ? 'border-black text-black' : 'border-black/5 text-text-secondary'
-        } ${step === s ? 'shadow-md scale-110' : ''}`}>
-          {step > s ? <Check size={18} /> : <span className="text-sm font-bold">{s}</span>}
-        </div>
-      ))}
-    </div>
-  );
-
   return (
-    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/40 backdrop-blur-md p-4 overflow-y-auto">
-      <div className="relative w-full max-w-2xl mt-12 mb-12 rounded-3xl border border-black/5 bg-white/70 p-8 shadow-2xl backdrop-blur-xl">
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50 backdrop-blur-md p-4 overflow-y-auto">
+      <div className="relative w-full max-w-2xl my-8 rounded-3xl border border-black/5 bg-white/90 p-6 md:p-8 shadow-2xl backdrop-blur-xl">
         {step < 4 && (
-          <button onClick={onClose} className="absolute right-6 top-6 w-8 h-8 flex items-center justify-center rounded-full bg-white text-black hover:bg-black/5 border border-black/5 shadow-sm transition-colors">✕</button>
+          <button onClick={onClose} className="absolute right-5 top-5 w-9 h-9 flex items-center justify-center rounded-full bg-white text-black hover:bg-black/5 border border-black/5 shadow-sm transition-colors">
+            <X size={18} />
+          </button>
         )}
 
-        <h2 className="mb-6 text-2xl font-black uppercase tracking-tight text-black">
-          {step === 4 ? 'Thanh toán thành công' : 'Thanh Toán An Toàn'}
+        <h2 className="mb-6 text-2xl md:text-3xl font-black uppercase tracking-tighter text-black">
+          {step === 4 ? 'Đặt hàng thành công' : 'Thanh toán an toàn'}
         </h2>
 
-        {step < 4 && <StepIndicator />}
+        {step < 4 && <StepIndicator step={step} />}
 
-        <div className="min-h-[300px]">
+        <div className="min-h-[320px]">
           {step === 1 && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <h3 className="mb-4 text-lg font-bold text-black">1. Thông tin giao hàng</h3>
-              <form className="grid grid-cols-2 gap-4">
-                <input type="text" placeholder="Họ" required className="col-span-1 rounded-2xl border border-black/10 bg-white/90 p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm" />
-                <input type="text" placeholder="Tên" required className="col-span-1 rounded-2xl border border-black/10 bg-white/90 p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm" />
-                <input type="email" placeholder="Email liên hệ" required className="col-span-2 rounded-2xl border border-black/10 bg-white/90 p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm" />
-                <input type="text" placeholder="Địa chỉ đường" required className="col-span-2 rounded-2xl border border-black/10 bg-white/90 p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm" />
-                <input type="text" placeholder="Thành phố / Tỉnh" required className="col-span-1 rounded-2xl border border-black/10 bg-white/90 p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm" />
-                <input type="text" placeholder="Mã bưu điện" required className="col-span-1 rounded-2xl border border-black/10 bg-white/90 p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm" />
-              </form>
+              <h3 className="mb-4 text-lg font-black uppercase tracking-wide flex items-center gap-2">
+                <Truck size={18} /> Thông tin giao hàng
+              </h3>
+              <div className="grid grid-cols-2 gap-3">
+                <Input placeholder="Họ" value={shipping.firstName} onChange={(v) => setShipping({ ...shipping, firstName: v })} />
+                <Input placeholder="Tên" value={shipping.lastName} onChange={(v) => setShipping({ ...shipping, lastName: v })} />
+                <Input placeholder="Email liên hệ" type="email" col2 value={shipping.email} onChange={(v) => setShipping({ ...shipping, email: v })} />
+                <Input placeholder="Địa chỉ" col2 value={shipping.address} onChange={(v) => setShipping({ ...shipping, address: v })} />
+                <Input placeholder="Thành phố / Tỉnh" value={shipping.city} onChange={(v) => setShipping({ ...shipping, city: v })} />
+                <Input placeholder="Mã bưu điện" value={shipping.zip} onChange={(v) => setShipping({ ...shipping, zip: v })} />
+              </div>
             </div>
           )}
 
           {step === 2 && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <h3 className="mb-4 text-lg font-bold text-black">2. Phương thức thanh toán</h3>
-              <div className="flex flex-col gap-4">
-                <label className="flex cursor-pointer items-center justify-between rounded-2xl border border-black bg-primary-neon/20 p-5 shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center justify-center h-5 w-5 rounded-full border-4 border-black bg-white"></div>
-                    <span className="font-bold text-black">Thẻ Tín Dụng / Ghi Nợ (Credit Card)</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="h-6 w-10 rounded bg-black/10"></div>
-                    <div className="h-6 w-10 rounded bg-black/10"></div>
-                  </div>
-                </label>
-                
-                <div className="grid grid-cols-2 gap-4 p-5 border border-black/5 rounded-2xl bg-white/60 backdrop-blur-md shadow-sm">
-                  <input type="text" placeholder="Số thẻ (0000 0000 0000 0000)" className="col-span-2 rounded-xl border border-black/10 bg-white p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 font-medium shadow-sm" />
-                  <input type="text" placeholder="MM/YY" className="col-span-1 rounded-xl border border-black/10 bg-white p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 font-medium shadow-sm" />
-                  <input type="text" placeholder="CVC" className="col-span-1 rounded-xl border border-black/10 bg-white p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 font-medium shadow-sm" />
-                </div>
-                
-                <label className="flex cursor-pointer items-center justify-between rounded-2xl border border-black/10 bg-white p-5 hover:border-black/30 shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="h-5 w-5 rounded-full border border-black/20"></div>
-                    <span className="font-bold text-black">Thanh toán VNPay / MoMo (Đang cập nhật)</span>
-                  </div>
-                </label>
+              <h3 className="mb-4 text-lg font-black uppercase tracking-wide flex items-center gap-2">
+                <CreditCard size={18} /> Phương thức thanh toán
+              </h3>
+              <div className="flex flex-col gap-3">
+                <PayOption active={payMethod === 'CARD'} onClick={() => setPayMethod('CARD')} icon={<CreditCard size={20} />} title="Thẻ Tín Dụng / Ghi Nợ" desc="Visa, Mastercard, JCB" />
+                <PayOption active={payMethod === 'VNPAY'} onClick={() => setPayMethod('VNPAY')} icon={<Wallet size={20} />} title="VNPay QR" desc="Quét QR qua app ngân hàng" />
+                <PayOption active={payMethod === 'MOMO'} onClick={() => setPayMethod('MOMO')} icon={<Wallet size={20} />} title="Ví MoMo" desc="Thanh toán qua ví MoMo" />
+                <PayOption active={payMethod === 'COD'} onClick={() => setPayMethod('COD')} icon={<Truck size={20} />} title="COD - Thanh toán khi nhận" desc="Phí COD: miễn phí nội thành" />
               </div>
+
+              {payMethod === 'CARD' && (
+                <div className="mt-4 grid grid-cols-2 gap-3 p-5 border border-black/10 rounded-2xl bg-white">
+                  <input placeholder="Số thẻ (0000 0000 0000 0000)" className="col-span-2 rounded-xl border border-black/10 bg-white p-3.5 outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 font-medium" />
+                  <input placeholder="MM/YY" className="rounded-xl border border-black/10 bg-white p-3.5 outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 font-medium" />
+                  <input placeholder="CVC" className="rounded-xl border border-black/10 bg-white p-3.5 outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 font-medium" />
+                </div>
+              )}
             </div>
           )}
 
           {step === 3 && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <h3 className="mb-4 text-lg font-bold text-black">3. Tổng kết & Xác nhận đơn hàng</h3>
-              <div className="rounded-auth border border-black/5 bg-white/60 p-6 rounded-3xl shadow-sm backdrop-blur-md">
-                <div className="max-h-40 overflow-y-auto mb-4 border-b border-black/5 pb-4">
-                  {items.map(item => (
-                    <div key={item.id} className="flex justify-between mb-2 text-sm">
-                      <span className="text-text-secondary font-medium">{item.quantity}x {item.name}</span>
-                      <span className="text-black font-bold">{formatVND(item.price * item.quantity)}</span>
+              <h3 className="mb-4 text-lg font-black uppercase tracking-wide">Tổng kết đơn hàng</h3>
+              <div className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
+                <div className="max-h-48 overflow-y-auto mb-4 border-b border-black/5 pb-4 space-y-2">
+                  {items.map((item) => (
+                    <div key={item.id} className="flex justify-between text-sm">
+                      <span className="text-text-secondary font-medium">{item.quantity}× {item.name}</span>
+                      <span className="font-bold whitespace-nowrap ml-3">{formatVND(item.price * item.quantity)}</span>
                     </div>
                   ))}
                 </div>
-                <div className="flex flex-col gap-2 text-sm font-medium">
-                  <div className="flex justify-between text-text-secondary">
-                    <span>Tạm tính</span><span className="text-black font-bold">{formatVND(subtotal)}</span>
-                  </div>
-                  <div className="flex justify-between text-text-secondary">
-                    <span>Thuế VAT (8%)</span><span className="text-black font-bold">{formatVND(tax)}</span>
-                  </div>
-                  <div className="flex justify-between text-text-secondary">
-                    <span>Phí vận chuyển</span><span className="text-black font-bold">{shipping === 0 ? 'MIỄN PHÍ' : formatVND(shipping)}</span>
-                  </div>
-                  <div className="mt-4 pt-4 border-t border-black/5 flex justify-between text-xl font-black text-black">
-                    <span>Thành tiền</span><span>{formatVND(total)}</span>
+                <div className="space-y-2 text-sm">
+                  <Row label="Tạm tính" value={formatVND(subtotal)} />
+                  <Row label="Thuế VAT (8%)" value={formatVND(tax)} />
+                  <Row label="Phí vận chuyển" value={shipFee === 0 ? 'MIỄN PHÍ' : formatVND(shipFee)} highlight={shipFee === 0} />
+                  <div className="mt-4 pt-4 border-t border-black/5 flex justify-between text-xl font-black">
+                    <span>Tổng tiền</span>
+                    <span>{formatVND(total)}</span>
                   </div>
                 </div>
               </div>
+              <p className="text-xs text-text-secondary mt-4 font-medium">
+                Bằng việc đặt hàng, bạn đồng ý với <a href="/policy" className="underline font-bold">Điều khoản & Chính sách</a> của Venta.
+              </p>
             </div>
           )}
 
           {step === 4 && (
             <div className="flex flex-col items-center justify-center py-10 text-center animate-in zoom-in duration-500">
-              <div className="mb-6 rounded-full bg-primary-neon/20 p-4">
+              <div className="mb-6 rounded-full bg-primary-neon/20 p-5">
                 <CheckCircle2 size={64} className="text-black" />
               </div>
-              <h2 className="mb-2 text-3xl font-black text-black">HOÀN TẤT ĐẶT HÀNG</h2>
-              <p className="mb-8 text-text-secondary font-medium">Thiết bị của bạn đang được đóng gói giao tới.<br/>Một email xác nhận đã được gửi đi.</p>
-              <button 
-                onClick={onClose}
-                className="rounded-2xl bg-black px-8 py-3.5 font-bold text-primary-neon hover:bg-black/80 transition-colors shadow-lg"
-              >
-                Trở về cửa hàng
+              <h2 className="mb-2 text-3xl md:text-4xl font-black uppercase tracking-tighter">Hoàn tất!</h2>
+              <p className="text-text-secondary font-medium mb-2 max-w-sm">Thiết bị của bạn đang được đóng gói và sẽ sớm có mặt tại địa chỉ giao hàng.</p>
+              {orderId && (
+                <p className="text-xs text-text-secondary font-mono mb-8">Mã đơn: <span className="text-black font-bold">{orderId}</span></p>
+              )}
+              <button onClick={onClose} className="rounded-2xl bg-black px-10 py-4 font-black text-primary-neon hover:bg-primary-neon hover:text-black transition-colors shadow-lg uppercase tracking-wide">
+                Tiếp tục mua sắm
               </button>
             </div>
           )}
         </div>
 
-        {/* Navigation Buttons */}
+        {/* Footer nav */}
         {step < 4 && (
           <div className="mt-8 flex justify-between border-t border-black/5 pt-6">
             {step > 1 ? (
-              <button onClick={handleBack} className="px-6 py-3 rounded-2xl font-bold bg-white border border-black/10 shadow-sm text-black hover:bg-black/5 transition-colors">
-                Quay lại
+              <button onClick={handleBack} className="flex items-center gap-2 px-5 py-3 rounded-2xl font-bold bg-white border border-black/10 shadow-sm hover:bg-black/5 transition-colors">
+                <ArrowLeft size={16} /> Quay lại
               </button>
-            ) : <div></div>}
-            
-            <button 
-              onClick={step === 3 ? handlePlaceOrder : handleNext} 
+            ) : <div />}
+            <button
+              onClick={step === 3 ? handlePlaceOrder : handleNext}
               disabled={isLoading}
-              className="flex items-center gap-2 rounded-2xl bg-primary-neon px-8 py-3 font-bold text-black shadow-md transition-transform hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 disabled:translate-y-0"
+              className="flex items-center gap-2 rounded-2xl bg-primary-neon px-8 py-3 font-black text-black shadow-md transition-transform hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 uppercase tracking-wide"
             >
-              {isLoading ? 'Đang xử lý...' : step === 3 ? 'Đặt Hàng Khóa Dữ Liệu' : 'Tiếp tục'}
-              {step < 3 && <ChevronRight size={18} />}
+              {isLoading ? 'Đang xử lý...' : step === 3 ? 'Đặt hàng' : 'Tiếp tục'}
+              {!isLoading && step < 3 && <ChevronRight size={18} />}
             </button>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function StepIndicator({ step }: { step: number }) {
+  const labels = ['Giao hàng', 'Thanh toán', 'Xác nhận'];
+  return (
+    <div className="mb-8">
+      <div className="flex items-center justify-between relative px-2">
+        <div className="absolute top-5 left-2 right-2 h-[3px] bg-black/5 z-0 rounded-full"></div>
+        <div className="absolute top-5 left-2 h-[3px] bg-black z-0 transition-all duration-300 rounded-full" style={{ width: `${((Math.min(step, 3) - 1) / 2) * 95}%` }}></div>
+        {[1, 2, 3].map((s) => (
+          <div key={s} className="relative z-10 flex flex-col items-center gap-2">
+            <div className={`flex h-10 w-10 items-center justify-center rounded-full border-[3px] transition-all bg-white ${step >= s ? 'border-black text-black' : 'border-black/10 text-text-secondary'} ${step === s ? 'shadow-md scale-110 bg-primary-neon border-black' : ''}`}>
+              {step > s ? <Check size={18} /> : <span className="text-sm font-black">{s}</span>}
+            </div>
+            <span className={`text-xs font-bold uppercase tracking-wider ${step >= s ? 'text-black' : 'text-text-secondary'}`}>{labels[s - 1]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Input({ placeholder, type = 'text', col2, value, onChange }: { placeholder: string; type?: string; col2?: boolean; value: string; onChange: (v: string) => void }) {
+  return (
+    <input
+      type={type}
+      placeholder={placeholder}
+      required
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={`${col2 ? 'col-span-2' : 'col-span-1'} rounded-2xl border border-black/10 bg-white p-3.5 text-black outline-none focus:border-primary-neon focus:ring-4 focus:ring-primary-neon/20 shadow-sm font-medium`}
+    />
+  );
+}
+
+function PayOption({ active, onClick, icon, title, desc }: { active: boolean; onClick: () => void; icon: React.ReactNode; title: string; desc: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all text-left ${
+        active ? 'border-black bg-primary-neon/20 shadow-md' : 'border-black/10 bg-white hover:border-black/30'
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${active ? 'bg-black text-primary-neon' : 'bg-light-bg text-black'}`}>
+          {icon}
+        </div>
+        <div>
+          <p className="font-black text-black text-sm">{title}</p>
+          <p className="text-xs text-text-secondary font-medium">{desc}</p>
+        </div>
+      </div>
+      <div className={`h-5 w-5 rounded-full border-2 flex items-center justify-center ${active ? 'border-black bg-white' : 'border-black/20'}`}>
+        {active && <div className="h-2.5 w-2.5 rounded-full bg-black"></div>}
+      </div>
+    </button>
+  );
+}
+
+function Row({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div className="flex justify-between text-text-secondary font-medium">
+      <span>{label}</span>
+      <span className={`${highlight ? 'text-primary-neon bg-black px-2 rounded font-black' : 'text-black font-bold'}`}>{value}</span>
     </div>
   );
 }
