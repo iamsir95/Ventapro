@@ -28,11 +28,15 @@ This is a single-process app: `server.ts` runs an Express server that **mounts V
 ### Request flow
 
 1. **`server.ts`** (entry point) — registers custom API routes (`/api/products/*`, `/api/orders/*`, `/api/auth/register`, `/api/auth/reset-password`), then mounts the Auth.js catch-all at `/api/auth/*`, then mounts Vite middleware (or static `dist/` in prod). Order matters: custom auth routes must come **before** the Auth.js catch-all.
-2. **`src/server/*`** — backend service layer (instantiates its own `PrismaClient`):
-   - `productService.ts` — search + create, with Redis caching (`ioredis`) and a `Map`-based memory fallback if Redis isn't reachable.
-   - `orderService.ts` — checkout wrapped in `prisma.$transaction`, uses atomic `decrement` on `ProductVariant.stock` and rolls back if stock goes negative. **Note**: if a `variantId` isn't found in DB it silently mocks a $100 line item (legacy preview-mode fallback) — be aware when debugging order totals.
-   - `paymentService.ts` — VNPay (`createVNPayUrl`/`verifyVNPayIPN`) and MoMo (`createMoMoRequest`/`verifyMoMoIPN`) HMAC signing. The `vnpay_return` and `momo_ipn` handlers in `server.ts` currently have `TODO: Update Order status to PAID` — verification works but order status isn't persisted yet.
-3. **`src/main.tsx`** — React 19 + React Router entry. Routes: `/`, `/products`, `/products/:id`, `/admin/*`, `/about`, `/contact`, `/policy`. Also handles OAuth popup close by sending `postMessage({type:'OAUTH_AUTH_SUCCESS'})` to `window.opener`.
+2. **`src/server/*`** — backend service layer (each instantiates its own `PrismaClient`):
+   - `productService.ts` — search/list/getById/create/update/delete, with Redis caching (`ioredis`) and `Map`-based memory fallback. Mutations call `invalidateCaches()` to clear stale search results.
+   - `orderService.ts` — checkout wrapped in `prisma.$transaction` with atomic `stock` decrement; plus `listOrders`/`getOrderById`/`updateOrderStatus` for admin. **Note**: checkout silently mocks $100 per item if a `variantId` isn't found in DB (legacy preview-mode fallback) — be aware when debugging order totals.
+   - `paymentService.ts` — VNPay (`createVNPayUrl`/`verifyVNPayIPN`) and MoMo (`createMoMoRequest`/`verifyMoMoIPN`) HMAC signing. Verified IPNs now flip the order to `COMPLETED` via `OrderService.updateOrderStatus`.
+   - `userService.ts` — paginated user list with per-user order counts and totals via Prisma `groupBy`.
+   - `analyticsService.ts` — dashboard aggregate: totals, 7-day revenue, top-selling products, low-stock variants, recent orders.
+3. **Admin auth gating** (`server.ts`): the `requireAdmin` middleware uses `@auth/express`'s `getSession(req, authConfig)` to verify the request has the admin email. All `/api/admin/*` routes and product mutations are gated by it. The Auth.js catch-all at `/api/auth/*` is registered **last** so `requireAdmin` and custom routes win.
+4. **`src/main.tsx`** — React 19 + React Router entry. Routes: `/`, `/products`, `/products/:id`, nested `/admin` with children (`index` → analytics, `products`, `orders`, `users`), plus `/about`, `/contact`, `/policy`. Also handles OAuth popup close by sending `postMessage({type:'OAUTH_AUTH_SUCCESS'})` to `window.opener`.
+5. **Admin pages** live in `src/pages/admin/` as siblings sharing `AdminLayout` (sidebar + Outlet + admin login gate). Tables hit the `/api/admin/*` endpoints; pagination is server-driven, search is debounced 300ms.
 
 ### Database (Prisma + SQLite for dev)
 
@@ -50,7 +54,7 @@ Auth.js models (`User`, `Account`, `Session`, `VerificationToken`) live in the s
 - Session strategy is `jwt`, 30 days.
 - **All cookies use `__Secure-` prefix + `sameSite: "none"` + `secure: true`** — this is required for the AI Studio iframe preview and means the app effectively requires HTTPS (or a trusting proxy) at runtime, even locally. `app.set("trust proxy", true)` is set for this reason.
 - If `process.env.APP_URL` is set, `AUTH_URL` is derived as `${APP_URL}/api/auth` — required when behind a reverse proxy so OAuth callbacks resolve correctly.
-- A **default admin** is seeded on every server start: `admin@pro-gaming.com` / `admin123`. The admin gate in `AdminDashboard.tsx` checks `session.user.email === 'admin@pro-gaming.com'`. There's also a hidden **Ctrl/Cmd+Shift+A** shortcut on `ProductsPage.tsx` that auto-logs in as admin and redirects to `/admin`.
+- A **default admin** is seeded on every server start: `admin@pro-gaming.com` / `admin123`. The admin email is hard-coded in two places: the `requireAdmin` middleware in `server.ts` (`ADMIN_EMAIL`) and the layout gate in `src/pages/admin/AdminLayout.tsx`. There's also a hidden **Ctrl/Cmd+Shift+A** shortcut on `ProductsPage.tsx` that auto-logs in as admin and redirects to `/admin`.
 - Client auth helpers live in `src/lib/authClient.ts` — OAuth signin opens a popup (`window.open(..., 'AuthPopup', ...)`); Credentials posts directly to `/api/auth/callback/credentials` with a CSRF token.
 
 ### Frontend state & data flow
